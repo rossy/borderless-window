@@ -1,0 +1,28 @@
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+	FILEVERSION 1, 0, 0, 0
+	PRODUCTVERSION 1, 0, 0, 0
+	FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+	FILEFLAGS 0
+	FILEOS VOS_NT_WINDOWS32
+	FILETYPE VFT_APP
+	FILESUBTYPE 0
+	{
+		BLOCK "StringFileInfo" {
+			BLOCK "000004b0" {
+				VALUE "CompanyName", "James Ross-Gowan"
+				VALUE "FileDescription", "borderless-window"
+				VALUE "FileVersion", "1.0.0.0"
+				VALUE "InternalName", "borderless-window"
+				VALUE "OriginalFilename", "borderless-window.exe"
+				VALUE "ProductName", "borderless-window"
+				VALUE "ProductVersion", "1.0.0.0"
+			}
+		}
+		BLOCK "VarFileInfo" {
+			VALUE "Translation", 0, 1200
+		}
+	}
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "borderless-window.exe.manifest"

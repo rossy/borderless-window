@@ -1,0 +1,420 @@
+/* borderless-window - a minimal borderless window with the Windows API
+ *
+ * Written in 2016 by James Ross-Gowan
+ *
+ * To the extent possible under law, the author(s) have dedicated all copyright
+ * and related and neighboring rights to this software to the public domain
+ * worldwide. This software is distributed without any warranty.
+ *
+ * See <https://creativecommons.org/publicdomain/zero/1.0/> for a copy of the
+ * CC0 Public Domain Dedication, which applies to this software.
+ */
+
+#include <windows.h>
+#include <windowsx.h>
+#include <shellapi.h>
+#include <dwmapi.h>
+#include <versionhelpers.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+extern IMAGE_DOS_HEADER __ImageBase;
+#define HINST_THISCOMPONENT ((HINSTANCE)&__ImageBase)
+
+#ifndef WM_NCUAHDRAWCAPTION
+#define WM_NCUAHDRAWCAPTION (0x00AE)
+#endif
+#ifndef WM_NCUAHDRAWFRAME
+#define WM_NCUAHDRAWFRAME (0x00AF)
+#endif
+
+struct window {
+	HWND window;
+
+	unsigned width;
+	unsigned height;
+
+	RECT rgn;
+
+	bool composition_enabled;
+};
+
+static void update_region(struct window *data)
+{
+	RECT old_rgn = data->rgn;
+
+	if (IsMaximized(data->window)) {
+		WINDOWINFO wi = { .cbSize = sizeof wi };
+		GetWindowInfo(data->window, &wi);
+
+		/* For maximized windows, a region is needed to cut off the non-client
+		   borders that hang over the edge of the screen */
+		data->rgn = (RECT) {
+			.left = wi.rcClient.left - wi.rcWindow.left,
+			.top = wi.rcClient.top - wi.rcWindow.top,
+			.right = wi.rcClient.right - wi.rcWindow.left,
+			.bottom = wi.rcClient.bottom - wi.rcWindow.top,
+		};
+	} else if (!data->composition_enabled) {
+		/* For ordinary themed windows when composition is disabled, a region
+		   is needed to remove the rounded top corners. Make it as large as
+		   possible to avoid having to change it when the window is resized. */
+		data->rgn = (RECT) {
+			.left = 0,
+			.top = 0,
+			.right = 32767,
+			.bottom = 32767,
+		};
+	} else {
+		/* Don't mess with the region when composition is enabled and the
+		   window is not maximized, otherwise it will lose its shadow */
+		data->rgn = (RECT) { 0 };
+	}
+
+	/* Avoid unnecessarily updating the region to avoid unnecessary redraws */
+	if (EqualRect(&data->rgn, &old_rgn))
+		return;
+	/* Treat empty regions as NULL regions */
+	if (EqualRect(&data->rgn, &(RECT) { 0 }))
+		SetWindowRgn(data->window, NULL, TRUE);
+	else
+		SetWindowRgn(data->window, CreateRectRgnIndirect(&data->rgn), TRUE);
+}
+
+static void handle_nccreate(HWND window, CREATESTRUCTW *cs)
+{
+	struct window *data = cs->lpCreateParams;
+	SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)data);
+}
+
+static void handle_composition_changed(struct window *data)
+{
+	BOOL enabled = FALSE;
+	DwmIsCompositionEnabled(&enabled);
+	data->composition_enabled = enabled;
+
+	if (enabled) {
+		/* The window needs a frame to show a shadow, so give it the smallest
+		   amount of frame possible */
+		DwmExtendFrameIntoClientArea(data->window, &(MARGINS) { 0, 0, 1, 0 });
+		DwmSetWindowAttribute(data->window, DWMWA_NCRENDERING_POLICY,
+		                      &(DWORD) { DWMNCRP_ENABLED }, sizeof(DWORD));
+	}
+
+	update_region(data);
+}
+
+static bool handle_keydown(struct window *data, DWORD key)
+{
+	/* Handle various commands that are useful for testing */
+	switch (key) {
+	case 'T':
+		SetWindowTextW(data->window, L"new window text");
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool has_autohide_appbar(UINT edge, RECT mon)
+{
+	if (IsWindows8Point1OrGreater()) {
+		return SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &(APPBARDATA) {
+			.cbSize = sizeof(APPBARDATA),
+			.uEdge = edge,
+			.rc = mon,
+		});
+	}
+
+	/* Before Windows 8.1, it was not possible to specify a monitor when
+	   checking for hidden appbars, so check only on the primary monitor */
+	if (mon.left != 0 || mon.top != 0)
+		return false;
+	return SHAppBarMessage(ABM_GETAUTOHIDEBAR, &(APPBARDATA) {
+		.cbSize = sizeof(APPBARDATA),
+		.uEdge = edge,
+	});
+}
+
+static void handle_nccalcsize(struct window *data, WPARAM wparam,
+                              LPARAM lparam)
+{
+	union {
+		LPARAM lparam;
+		RECT* rect;
+	} params = { .lparam = lparam };
+
+	/* DefWindowProc must be called in both the maximized and non-maximized
+	   cases, otherwise tile/cascade windows won't work */
+	RECT nonclient = *params.rect;
+	DefWindowProcW(data->window, WM_NCCALCSIZE, wparam, params.lparam);
+	RECT client = *params.rect;
+
+	if (IsMaximized(data->window)) {
+		WINDOWINFO wi = { .cbSize = sizeof wi };
+		GetWindowInfo(data->window, &wi);
+
+		/* Maximized windows always have a non-client border that hangs over
+		   the edge of the screen, so the size proposed by WM_NCCALCSIZE is
+		   fine. Just adjust the top border to remove the window title. */
+		*params.rect = (RECT) {
+			.left = client.left,
+			.top = nonclient.top + wi.cyWindowBorders,
+			.right = client.right,
+			.bottom = client.bottom,
+		};
+
+		HMONITOR mon = MonitorFromWindow(data->window, MONITOR_DEFAULTTOPRIMARY);
+		MONITORINFO mi = { .cbSize = sizeof mi };
+		GetMonitorInfoW(mon, &mi);
+
+		/* If the client rectangle is the same as the monitor's rectangle,
+		   the shell assumes that the window has gone fullscreen, so it removes
+		   the topmost attribute from any hidden toolbars, making them
+		   inaccessible. To avoid this, check for the presence of any auto-hide
+		   toolbars and make space for them. */
+		if (EqualRect(params.rect, &mi.rcMonitor)) {
+			/* Hidden toolbars are always 2px. MFC makes the same assumption. */
+			if (has_autohide_appbar(ABE_LEFT, mi.rcMonitor))
+				params.rect->left += 2;
+			if (has_autohide_appbar(ABE_TOP, mi.rcMonitor))
+				params.rect->top += 2;
+			if (has_autohide_appbar(ABE_RIGHT, mi.rcMonitor))
+				params.rect->right -= 2;
+			if (has_autohide_appbar(ABE_BOTTOM, mi.rcMonitor))
+				params.rect->bottom -= 2;
+		}
+	} else {
+		/* For the non-maximized case, set the output RECT to what it was
+		   before WM_NCCALCSIZE modified it. This will make the client size the
+		   same as the non-client size. */
+		*params.rect = nonclient;
+	}
+}
+
+static LRESULT handle_nchittest(struct window *data, int x, int y)
+{
+	if (IsMaximized(data->window))
+		return HTCLIENT;
+
+	POINT mouse = { x, y };
+	ScreenToClient(data->window, &mouse);
+
+	int frame_height = GetSystemMetrics(SM_CYFRAME) +
+	                   GetSystemMetrics(SM_CXPADDEDBORDER);
+
+	if (mouse.y < frame_height) {
+		/* The diagonal size handles are wider than the horizontal border */
+		int button_width = GetSystemMetrics(SM_CXSMSIZE) +
+		                   GetSystemMetrics(SM_CXBORDER);
+
+		if (mouse.x < button_width)
+			return HTTOPLEFT;
+		if (mouse.x > data->width - button_width)
+			return HTTOPRIGHT;
+
+		return HTTOP;
+	}
+
+	if (mouse.y > data->height - frame_height) {
+		int button_width = GetSystemMetrics(SM_CXSMSIZE) +
+		                   GetSystemMetrics(SM_CXBORDER);
+
+		if (mouse.x < button_width)
+			return HTBOTTOMLEFT;
+		if (mouse.x > data->width - button_width)
+			return HTBOTTOMRIGHT;
+
+		return HTBOTTOM;
+	}
+
+	int frame_width = GetSystemMetrics(SM_CXFRAME) +
+	                  GetSystemMetrics(SM_CXPADDEDBORDER);
+
+	if (mouse.x < frame_width)
+		return HTLEFT;
+	if (mouse.x > data->width - frame_width)
+		return HTRIGHT;
+
+	return HTCLIENT;
+}
+
+static void handle_paint(struct window *data)
+{
+	PAINTSTRUCT ps;
+	HDC dc = BeginPaint(data->window, &ps);
+	HBRUSH bb = CreateSolidBrush(RGB(0, 255, 0));
+
+	/* Draw a rectangle on the border of the client area for testing */
+	FillRect(dc, &(RECT) { 0, 0, 1, data->height }, bb);
+	FillRect(dc, &(RECT) { 0, 0, data->width, 1 }, bb);
+	FillRect(dc, &(RECT) { data->width - 1, 0, data->width, data->height }, bb);
+	FillRect(dc, &(RECT) { 0, data->height - 1, data->width, data->height }, bb);
+
+	DeleteObject(bb);
+	EndPaint(data->window, &ps);
+}
+
+static void handle_windowposchanged(struct window *data, const WINDOWPOS *pos)
+{
+	RECT client;
+	GetClientRect(data->window, &client);
+	unsigned old_width = data->width;
+	unsigned old_height = data->height;
+	data->width = client.right;
+	data->height = client.bottom;
+	bool client_changed = data->width != old_width || data->height != old_height;
+
+	if (client_changed || (pos->flags & SWP_FRAMECHANGED))
+		update_region(data);
+
+	if (client_changed) {
+		/* Invalidate the changed parts of the rectangle drawn in WM_PAINT */
+		if (data->width > old_width) {
+			InvalidateRect(data->window, &(RECT) {
+				old_width - 1, 0, old_width, old_height
+			}, TRUE);
+		} else {
+			InvalidateRect(data->window, &(RECT) {
+				data->width - 1, 0, data->width, data->height
+			}, TRUE);
+		}
+		if (data->height > old_height) {
+			InvalidateRect(data->window, &(RECT) {
+				0, old_height - 1, old_width, old_height
+			}, TRUE);
+		} else {
+			InvalidateRect(data->window, &(RECT) {
+				0, data->height - 1, data->width, data->height
+			}, TRUE);
+		}
+	}
+}
+
+static LRESULT handle_message_invisible(HWND window, UINT msg, WPARAM wparam,
+	LPARAM lparam)
+{
+	LONG_PTR old_style = GetWindowLongPtrW(window, GWL_STYLE);
+
+	/* Prevent Windows from drawing the default title bar by temporarily
+	   toggling the WS_VISIBLE style. This is recommended in:
+	   https://blogs.msdn.microsoft.com/wpfsdk/2008/09/08/custom-window-chrome-in-wpf/ */
+	SetWindowLongPtrW(window, GWL_STYLE, old_style & ~WS_VISIBLE);
+	LRESULT result = DefWindowProcW(window, msg, wparam, lparam);
+	SetWindowLongPtrW(window, GWL_STYLE, old_style);
+
+	return result;
+}
+
+static LRESULT CALLBACK borderless_window_proc(HWND window, UINT msg,
+	WPARAM wparam, LPARAM lparam)
+{
+	struct window *data = (void*)GetWindowLongPtrW(window, GWLP_USERDATA);
+	if (!data) {
+		/* Due to a longstanding Windows bug, overlapped windows will receive a
+		   WM_GETMINMAXINFO message before WM_NCCREATE. This is safe to ignore.
+		   It doesn't need any special handling anyway. */
+		if (msg == WM_NCCREATE)
+			handle_nccreate(window, (CREATESTRUCTW*)lparam);
+		return DefWindowProcW(window, msg, wparam, lparam);
+	}
+
+	switch (msg) {
+	case WM_CLOSE:
+		DestroyWindow(window);
+		return 0;
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		return 0;
+	case WM_DWMCOMPOSITIONCHANGED:
+		handle_composition_changed(data);
+		return 0;
+	case WM_KEYDOWN:
+		if (handle_keydown(data, wparam))
+			return 0;
+		break;
+	case WM_LBUTTONDOWN:
+		/* Allow window dragging from any point */
+		ReleaseCapture();
+		SendMessageW(window, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+		return 0;
+	case WM_NCACTIVATE:
+		/* DefWindowProc won't repaint the window border if lParam (normally a
+		   HRGN) is -1. This is recommended in:
+		   https://blogs.msdn.microsoft.com/wpfsdk/2008/09/08/custom-window-chrome-in-wpf/ */
+		return DefWindowProcW(window, msg, wparam, -1);
+	case WM_NCCALCSIZE:
+		handle_nccalcsize(data, wparam, lparam);
+		return 0;
+	case WM_NCHITTEST:
+		return handle_nchittest(data, GET_X_LPARAM(lparam),
+		                        GET_Y_LPARAM(lparam));
+	case WM_NCPAINT:
+		/* Only block WM_NCPAINT when composition is disabled. If it's blocked
+		   when composition is enabled, the window shadow won't be drawn. */
+		if (!data->composition_enabled)
+			return 0;
+		break;
+	case WM_NCUAHDRAWCAPTION:
+	case WM_NCUAHDRAWFRAME:
+		/* These undocumented messages are sent to themed windows. Don't let
+		   DefWindowProc see them, or it will draw a themed caption over the
+		   window. */
+		return 0;
+	case WM_PAINT:
+		handle_paint(data);
+		return 0;
+	case WM_SETICON:
+	case WM_SETTEXT:
+		/* Block painting while these messages are handled */
+		if (!data->composition_enabled)
+			return handle_message_invisible(window, msg, wparam, lparam);
+		break;
+	case WM_WINDOWPOSCHANGED:
+		handle_windowposchanged(data, (WINDOWPOS*)lparam);
+		return 0;
+	}
+
+	return DefWindowProcW(window, msg, wparam, lparam);
+}
+
+int CALLBACK wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
+{
+	ATOM cls = RegisterClassExW(&(WNDCLASSEXW) {
+		.cbSize = sizeof(WNDCLASSEXW),
+		.lpfnWndProc = borderless_window_proc,
+		.hInstance = HINST_THISCOMPONENT,
+		.hCursor = LoadCursor(NULL, IDC_ARROW),
+		.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1),
+		.lpszClassName = L"borderless-window",
+	});
+
+	struct window *data = calloc(1, sizeof(struct window));
+	data->window = CreateWindowExW(
+		WS_EX_APPWINDOW | WS_EX_LAYERED,
+		(LPWSTR)MAKEINTATOM(cls),
+		L"Borderless Window",
+		WS_OVERLAPPEDWINDOW | WS_SIZEBOX,
+		CW_USEDEFAULT, CW_USEDEFAULT, 200, 200,
+		NULL, NULL, HINST_THISCOMPONENT, data);
+
+	/* Make the window a layered window so the legacy GDI API can be used to
+	   draw to it without messing up the area on top of the DWM frame. Note:
+	   This is not necessary if other drawing APIs are used, eg. GDI+, OpenGL,
+	   Direct2D, Direct3D, DirectComposition, etc. */
+	SetLayeredWindowAttributes(data->window, RGB(255, 0, 255), 0, LWA_COLORKEY);
+
+	handle_composition_changed(data);
+	ShowWindow(data->window, SW_SHOWDEFAULT);
+	UpdateWindow(data->window);
+
+	MSG message;
+	while (GetMessageW(&message, NULL, 0, 0)) {
+		TranslateMessage(&message);
+		DispatchMessageW(&message);
+	}
+
+	free(data);
+	UnregisterClassW((LPWSTR)MAKEINTATOM(cls), HINST_THISCOMPONENT);
+	return message.wParam;
+}
