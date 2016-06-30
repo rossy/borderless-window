@@ -26,7 +26,20 @@ quirks. It creates a window that:
 - Does not cover the taskbar when maximized
 - Does not disable auto-hide taskbars when maximized
 - Casts a drop-shadow, like other top-level windows
+- Has hide, show, maximize, minimize and restore animations, like other
+  top-level windows
 - Can be resized by the user
+- Does not accumulate visual corruption in the client area from the hidden
+  window borders when the window is activated, the window text is changed or
+  the window menu is opened
+
+Building
+--------
+
+A Makefile is included for mingw-w64 GCC. The C source should also compile in
+Visual Studio 2015 with a recent Windows SDK. The generated binary should be
+compatible with Windows Vista and up. It will not work unmodified on Windows XP
+due to the hard dependency on dwmapi.dll.
 
 Copying
 -------
