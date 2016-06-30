@@ -114,6 +114,54 @@ static bool handle_keydown(struct window *data, DWORD key)
 
 	/* Handle various commands that are useful for testing */
 	switch (key) {
+	case 'H':;
+		HDC dc = GetDC(data->window);
+
+		WINDOWINFO wi = { .cbSize = sizeof wi };
+		GetWindowInfo(data->window, &wi);
+
+		int width = wi.rcWindow.right - wi.rcWindow.left;
+		int height = wi.rcWindow.bottom - wi.rcWindow.top;
+		int cwidth = wi.rcClient.right - wi.rcClient.left;
+		int cheight = wi.rcClient.bottom - wi.rcClient.top;
+		int diffx = width - cwidth;
+		int diffy = height - cheight;
+
+		/* Visualize the NCHITTEST values in the client area */
+		for (int y = 0, posy = 0; y < height; y++, posy++) {
+			/* Compress the window rectangle into the client rectangle by
+			   skipping pixels in the middle */
+			if (y == cheight / 2)
+				y += diffy;
+			for (int x = 0, posx = 0; x < width; x++, posx++) {
+				if (x == cwidth / 2)
+					x += diffx;
+
+				LRESULT ht = SendMessageW(data->window, WM_NCHITTEST, 0,
+				                          MAKELPARAM(x + wi.rcWindow.left,
+				                                     y + wi.rcWindow.top));
+				switch (ht) {
+				case HTLEFT:
+				case HTTOP:
+				case HTRIGHT:
+				case HTBOTTOM:
+					SetPixel(dc, posx, posy, RGB(255, 0, 0));
+					break;
+				case HTTOPLEFT:
+				case HTTOPRIGHT:
+				case HTBOTTOMLEFT:
+				case HTBOTTOMRIGHT:
+					SetPixel(dc, posx, posy, RGB(0, 255, 0));
+					break;
+				default:
+					SetPixel(dc, posx, posy, RGB(0, 0, 255));
+					break;
+				}
+			}
+		}
+
+		ReleaseDC(data->window, dc);
+		return true;
 	case 'I':
 		if (icon_toggle)
 			icon = LoadIcon(NULL, IDI_ERROR);
@@ -228,19 +276,19 @@ static LRESULT handle_nchittest(struct window *data, int x, int y)
 
 		if (mouse.x < button_width)
 			return HTTOPLEFT;
-		if (mouse.x > data->width - button_width)
+		if (mouse.x >= data->width - button_width)
 			return HTTOPRIGHT;
 
 		return HTTOP;
 	}
 
-	if (mouse.y > data->height - frame_height) {
+	if (mouse.y >= data->height - frame_height) {
 		int button_width = GetSystemMetrics(SM_CXSMSIZE) +
 		                   GetSystemMetrics(SM_CXBORDER);
 
 		if (mouse.x < button_width)
 			return HTBOTTOMLEFT;
-		if (mouse.x > data->width - button_width)
+		if (mouse.x >= data->width - button_width)
 			return HTBOTTOMRIGHT;
 
 		return HTBOTTOM;
@@ -251,7 +299,7 @@ static LRESULT handle_nchittest(struct window *data, int x, int y)
 
 	if (mouse.x < frame_width)
 		return HTLEFT;
-	if (mouse.x > data->width - frame_width)
+	if (mouse.x >= data->width - frame_width)
 		return HTRIGHT;
 
 	return HTCLIENT;
