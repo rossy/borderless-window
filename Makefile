@@ -4,7 +4,7 @@ STD = -std=c99
 DEFS = -D_WIN32_WINNT=0x0602
 CFLAGS = -g -Wall -municode
 LDFLAGS = -municode -mwindows -Wl,--major-subsystem-version=6,--minor-subsystem-version=0
-LIBS = -ldwmapi
+LIBS = -ldwmapi -luxtheme
 
 EXE = borderless-window.exe
 OBJ = borderless-window.o resources.o

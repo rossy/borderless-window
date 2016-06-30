@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <uxtheme.h>
 #include <dwmapi.h>
 #include <versionhelpers.h>
 #include <stdlib.h>
@@ -36,6 +37,7 @@ struct window {
 
 	RECT rgn;
 
+	bool theme_enabled;
 	bool composition_enabled;
 };
 
@@ -87,7 +89,7 @@ static void handle_nccreate(HWND window, CREATESTRUCTW *cs)
 	SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)data);
 }
 
-static void handle_composition_changed(struct window *data)
+static void handle_compositionchanged(struct window *data)
 {
 	BOOL enabled = FALSE;
 	DwmIsCompositionEnabled(&enabled);
@@ -106,10 +108,26 @@ static void handle_composition_changed(struct window *data)
 
 static bool handle_keydown(struct window *data, DWORD key)
 {
+	static bool icon_toggle;
+	static bool text_toggle;
+	HICON icon;
+
 	/* Handle various commands that are useful for testing */
 	switch (key) {
+	case 'I':
+		if (icon_toggle)
+			icon = LoadIcon(NULL, IDI_ERROR);
+		else
+			icon = LoadIcon(NULL, IDI_EXCLAMATION);
+		icon_toggle = !icon_toggle;
+		SendMessageW(data->window, WM_SETICON, ICON_BIG, (LPARAM)icon);
+		return true;
 	case 'T':
-		SetWindowTextW(data->window, L"new window text");
+		if (text_toggle)
+			SetWindowTextW(data->window, L"window text");
+		else
+			SetWindowTextW(data->window, L"txet wodniw");
+		text_toggle = !text_toggle;
 		return true;
 	default:
 		return false;
@@ -255,6 +273,11 @@ static void handle_paint(struct window *data)
 	EndPaint(data->window, &ps);
 }
 
+static void handle_themechanged(struct window *data)
+{
+	data->theme_enabled = IsThemeActive();
+}
+
 static void handle_windowposchanged(struct window *data, const WINDOWPOS *pos)
 {
 	RECT client;
@@ -327,7 +350,7 @@ static LRESULT CALLBACK borderless_window_proc(HWND window, UINT msg,
 		PostQuitMessage(0);
 		return 0;
 	case WM_DWMCOMPOSITIONCHANGED:
-		handle_composition_changed(data);
+		handle_compositionchanged(data);
 		return 0;
 	case WM_KEYDOWN:
 		if (handle_keydown(data, wparam))
@@ -357,18 +380,24 @@ static LRESULT CALLBACK borderless_window_proc(HWND window, UINT msg,
 		break;
 	case WM_NCUAHDRAWCAPTION:
 	case WM_NCUAHDRAWFRAME:
-		/* These undocumented messages are sent to themed windows. Don't let
-		   DefWindowProc see them, or it will draw a themed caption over the
-		   window. */
+		/* These undocumented messages are sent to draw themed window borders.
+		   Block them to prevent drawing borders over the client area. */
 		return 0;
 	case WM_PAINT:
 		handle_paint(data);
 		return 0;
 	case WM_SETICON:
 	case WM_SETTEXT:
-		/* Block painting while these messages are handled */
-		if (!data->composition_enabled)
+		/* Disable painting while these messages are handled to prevent them
+		   from drawing a window caption over the client area, but only when
+		   composition and theming are disabled. These messages don't paint
+		   when composition is enabled and blocking WM_NCUAHDRAWCAPTION should
+		   be enough to prevent painting when theming is enabled. */
+		if (!data->composition_enabled && !data->theme_enabled)
 			return handle_message_invisible(window, msg, wparam, lparam);
+		break;
+	case WM_THEMECHANGED:
+		handle_themechanged(data);
 		break;
 	case WM_WINDOWPOSCHANGED:
 		handle_windowposchanged(data, (WINDOWPOS*)lparam);
@@ -404,7 +433,8 @@ int CALLBACK wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
 	   Direct2D, Direct3D, DirectComposition, etc. */
 	SetLayeredWindowAttributes(data->window, RGB(255, 0, 255), 0, LWA_COLORKEY);
 
-	handle_composition_changed(data);
+	handle_compositionchanged(data);
+	handle_themechanged(data);
 	ShowWindow(data->window, SW_SHOWDEFAULT);
 	UpdateWindow(data->window);
 
