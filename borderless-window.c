@@ -236,19 +236,20 @@ static void handle_nccalcsize(struct window *data, WPARAM wparam,
 
 		/* If the client rectangle is the same as the monitor's rectangle,
 		   the shell assumes that the window has gone fullscreen, so it removes
-		   the topmost attribute from any hidden toolbars, making them
-		   inaccessible. To avoid this, check for the presence of any auto-hide
-		   toolbars and make space for them. */
+		   the topmost attribute from any auto-hide appbars, making them
+		   inaccessible. To avoid this, reduce the size of the client area by
+		   one pixel on a certain edge. The edge is chosen based on which side
+		   of the monitor is likely to contain an auto-hide appbar, so the
+		   missing client area is covered by it. */
 		if (EqualRect(params.rect, &mi.rcMonitor)) {
-			/* Hidden toolbars are always 2px. MFC makes the same assumption. */
-			if (has_autohide_appbar(ABE_LEFT, mi.rcMonitor))
-				params.rect->left += 2;
-			if (has_autohide_appbar(ABE_TOP, mi.rcMonitor))
-				params.rect->top += 2;
-			if (has_autohide_appbar(ABE_RIGHT, mi.rcMonitor))
-				params.rect->right -= 2;
 			if (has_autohide_appbar(ABE_BOTTOM, mi.rcMonitor))
-				params.rect->bottom -= 2;
+				params.rect->bottom--;
+			else if (has_autohide_appbar(ABE_LEFT, mi.rcMonitor))
+				params.rect->left++;
+			else if (has_autohide_appbar(ABE_TOP, mi.rcMonitor))
+				params.rect->top++;
+			else if (has_autohide_appbar(ABE_RIGHT, mi.rcMonitor))
+				params.rect->right--;
 		}
 	} else {
 		/* For the non-maximized case, set the output RECT to what it was
