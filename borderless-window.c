@@ -267,42 +267,33 @@ static LRESULT handle_nchittest(struct window *data, int x, int y)
 	POINT mouse = { x, y };
 	ScreenToClient(data->window, &mouse);
 
-	int frame_height = GetSystemMetrics(SM_CYFRAME) +
-	                   GetSystemMetrics(SM_CXPADDEDBORDER);
+	/* The horizontal frame should be the same size as the vertical frame,
+	   since the NONCLIENTMETRICS structure does not distinguish between them */
+	int frame_size = GetSystemMetrics(SM_CXFRAME) +
+	                 GetSystemMetrics(SM_CXPADDEDBORDER);
+	/* The diagonal size handles are wider than the frame */
+	int diagonal_width = frame_size * 2 + GetSystemMetrics(SM_CXBORDER);
 
-	if (mouse.y < frame_height) {
-		/* The diagonal size handles are wider than the horizontal border */
-		int button_width = GetSystemMetrics(SM_CXSMSIZE) +
-		                   GetSystemMetrics(SM_CXBORDER);
-
-		if (mouse.x < button_width)
+	if (mouse.y < frame_size) {
+		if (mouse.x < diagonal_width)
 			return HTTOPLEFT;
-		if (mouse.x >= data->width - button_width)
+		if (mouse.x >= data->width - diagonal_width)
 			return HTTOPRIGHT;
-
 		return HTTOP;
 	}
 
-	if (mouse.y >= data->height - frame_height) {
-		int button_width = GetSystemMetrics(SM_CXSMSIZE) +
-		                   GetSystemMetrics(SM_CXBORDER);
-
-		if (mouse.x < button_width)
+	if (mouse.y >= data->height - frame_size) {
+		if (mouse.x < diagonal_width)
 			return HTBOTTOMLEFT;
-		if (mouse.x >= data->width - button_width)
+		if (mouse.x >= data->width - diagonal_width)
 			return HTBOTTOMRIGHT;
-
 		return HTBOTTOM;
 	}
 
-	int frame_width = GetSystemMetrics(SM_CXFRAME) +
-	                  GetSystemMetrics(SM_CXPADDEDBORDER);
-
-	if (mouse.x < frame_width)
+	if (mouse.x < frame_size)
 		return HTLEFT;
-	if (mouse.x >= data->width - frame_width)
+	if (mouse.x >= data->width - frame_size)
 		return HTRIGHT;
-
 	return HTCLIENT;
 }
 
