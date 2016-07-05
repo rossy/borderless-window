@@ -108,10 +108,6 @@ static void handle_compositionchanged(struct window *data)
 
 static bool handle_keydown(struct window *data, DWORD key)
 {
-	static bool icon_toggle;
-	static bool text_toggle;
-	HICON icon;
-
 	/* Handle various commands that are useful for testing */
 	switch (key) {
 	case 'H':;
@@ -162,20 +158,50 @@ static bool handle_keydown(struct window *data, DWORD key)
 
 		ReleaseDC(data->window, dc);
 		return true;
-	case 'I':
+	case 'I':;
+		static bool icon_toggle;
+		HICON icon;
+
 		if (icon_toggle)
 			icon = LoadIcon(NULL, IDI_ERROR);
 		else
 			icon = LoadIcon(NULL, IDI_EXCLAMATION);
 		icon_toggle = !icon_toggle;
+
+		/* This should make DefWindowProc try to redraw the icon on the window
+		   border. The redraw can be blocked by blocking WM_NCUAHDRAWCAPTION
+		   when themes are enabled or unsetting WS_VISIBLE while WM_SETICON is
+		   processed. */
 		SendMessageW(data->window, WM_SETICON, ICON_BIG, (LPARAM)icon);
 		return true;
-	case 'T':
+	case 'T':;
+		static bool text_toggle;
+
+		/* This should make DefWindowProc try to redraw the title on the window
+		   border. As above, the redraw can be blocked by blocking
+		   WM_NCUAHDRAWCAPTION or unsetting WS_VISIBLE while WM_SETTEXT is
+		   processed. */
 		if (text_toggle)
 			SetWindowTextW(data->window, L"window text");
 		else
 			SetWindowTextW(data->window, L"txet wodniw");
 		text_toggle = !text_toggle;
+
+		return true;
+	case 'M':;
+		static bool menu_toggle;
+		HMENU menu = GetSystemMenu(data->window, FALSE);
+
+		/* This should make DefWindowProc try to redraw the window controls.
+		   This redraw can be blocked by blocking WM_NCUAHDRAWCAPTION when
+		   themes are enabled or unsetting WS_VISIBLE during the EnableMenuItem
+		   call (not done here for testing purposes.) */
+		if (menu_toggle)
+			EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
+		else
+			EnableMenuItem(menu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+		menu_toggle = !menu_toggle;
+
 		return true;
 	default:
 		return false;
